@@ -1,0 +1,560 @@
+---
+title: "H1N1 Vaccination Status Prediction"
+author: "Team 2: Ruoyu Zhang, Tongyu Zhao, Yuhao Zhou"
+date: "11/28/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r, include=F, echo=F, warning=F}
+library(rpart)
+library(rpart.plot)
+library(dplyr)      
+library(e1071)       
+library(caret)       
+library(ipred)
+library(ggplot2)
+library(kableExtra)
+library(gbm)
+library(gridExtra)
+library(grid)
+library(lattice)
+library(tidyverse)
+library(glmnet)
+library(randomForest)
+```
+
+# Abstract
+
+In an effort to determine the likelihood of an individual vaccinated against H1N1 virus, we investigated how different social, economic, and demographic characteristics are associated with personal vaccination patterns using the National 2009 H1N1 Flu Survey Data from National Center for Immunization and Respiratory Diseases (NCIRD). Leveraging both unsupervised and supervised machine learning methods, including principal component analysis (PCA), k-means clustering, penalized classification models, and classification trees, our group identified the most important 5 factors that affect people's H1N1 vaccination status: seasonal flu vaccination status, opinion on H1N1 risk, doctor recommendation of H1N1, opinion on effectiveness of H1N1 vaccine, and doctor recommendation of seasonal flu vaccine.
+
+# Introduction
+
+Vaccines are one of the greatest public health measures used to fight infectious diseases. Vaccines provide immunization for individuals, and enough immunization in a community can further reduce the spread of diseases through “herd immunity”. This project will revisit the public health response to the 2009 H1N1 pandemic, colloquially called “swine flu”. Researchers estimated that in the first year, it was responsible for between 151,000 to 575,000 deaths globally. Utilizing the 2009 National H1N1 Flu Survey dataset from NCIRD, we would like to answer the following question: Can we predict whether people got H1N1 flu vaccines based on information they shared about their backgrounds, opinions, and health behavior?
+
+# Data
+The dataset (https://www.cdc.gov/nchs/nis/data_files_h1n1.htm) for this project comes from the National 2009 H1N1 Flu Survey (NHFS), which was sponsored by the National Center for Immunization and Respiratory Diseases (NCIRD). In order to develop a better understanding of how different social, economic, and demographic characteristics are associated with personal vaccination patterns and provide guidance for future public health efforts, NHFS conducted this phone survey and asked respondents whether they had received the H1N1 and seasonal flu vaccines, in conjunction with questions about themselves. These additional questions covered their social, economic, and demographic background, opinions on risks of illness and vaccine effectiveness, and behaviors towards mitigating transmission. The dataset included 26,707 observations and 36 distinct features, all of which are categorical or ordinal variables. The response variable is "H1N1_vaccine," which is a binary variable showing whether the individual gets vaccinated against H1N1. Our predictor variables can be grouped into three types (A detailed list of the available predictors are attached in the **Appendix**):\
+\
+**Subjective concerns about H1N1 flu**: knowledge level, opinion of vaccine effectiveness, opinion of flu risk, worry of getting sick from vaccine, etc.\
+**Personal behavioral patterns**: wearing face mask or not, washing hands frequently or not, reducing large gathering or not, etc.\
+**Objective personal informations**: having health insurance or not, age, education, race, sex, income poverty level, employment status, etc.\
+
+Our group decided to use this dataset because the rich observations (26K), which is sufficient for us to play around, and see some common phenomena. Moreover, this dataset also covers a borad scope of predictor variables (demographic, social, economic, etc.), which makes it a perfect dataset for us to build our machine learning models.
+
+Before building any machine learning models, we first cleaned the dataset. We dropped random-coded-variables "hhs_geo_region", "employment_industry", and "employment_occupation." All three random-coded-variables present confidential information using random string character that we could not decipher. Since all the variables in this dataset are either categorical or ordinal, we transformed all variables into numeric (e.g. recoded as 1, 2, 3, 4) and regarded them as numeric variables in our study. 
+Furthermore, we removed rows that have N/A values. The original dataset contains 36 predictor variables and 1 response variable with 26,707 observations. After data cleaning, the final dataset contains 33 predictor variables and 1 response variable with 11,794 observations, which is still large enough for us to make our model. Of the final dataset, 8,256 (70%) are randomly selected to be the training dataset and 3,538 (30%) are randomly selected to be the testing dataset. The first five observations and first 5 predictor variables of the training dataset are printed in Table 1.
+
+```{r, echo=F}
+training_set=read.csv("training_set.csv")
+testing_set=read.csv("testing_set.csv")
+head(training_set)[1:5,1:5]%>%
+  kbl(caption = "Overview of Training Dataset") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r, echo=F}
+training_set_mod=training_set
+testing_set_mod=testing_set
+training_set_mod$h1n1_vaccine[training_set$h1n1_vaccine==0] <- "No"
+training_set_mod$h1n1_vaccine[training_set$h1n1_vaccine==1] <- "Yes"
+testing_set_mod$h1n1_vaccine[testing_set$h1n1_vaccine==0] <- "No"
+testing_set_mod$h1n1_vaccine[testing_set$h1n1_vaccine==1] <- "Yes"
+```
+
+
+# Exploratory Data Analysis
+
+Since we have two vaccination status in our dataset: seasonal vaccination status and H1N1 vaccine status. we were curious to see if there is any relationship between these two vaccination statuses. Combining training dataset and testing dataset, we have 3,561 individuals vaccinated against H1N1 and 8,233 individuals not vaccinated against H1N1. Combining training dataset and testing dataset, we have 5,923 individuals vaccinated against seasonal flu and 5,871 individuals not vaccinated against seasonal flu.\
+
+```{r, echo=F, eval=F, include=F,fig.width=6, fig.height=2}
+#par(mfrow=c(1,2))
+#barplot(table(rbind(training_set,testing_set)$h1n1_vaccine),xlab="H1N1 Vaccination", ylab="Occurance", main="Fig 1: H1N1 Vaccination Status")
+#table(rbind(training_set,testing_set)$h1n1_vaccine)
+#barplot(table(rbind(training_set,testing_set)$seasonal_vaccine),xlab="Seasonal Vaccination", ylab="Occurance", main="Fig 2:Seasonal Vaccination Status")
+#table(rbind(training_set,testing_set)$seasonal_vaccine)
+```
+
+From the following contingency table and its visualization, we observed that most people who did not receive H1N1 vaccine also did not receive seasonal flu vaccine; around half of people who received H1N1 vaccine also received their seasonal flu vaccine. To formally test the relationship between seasonal flu vaccine and H1N1 vaccine, a Chi-Square has been conducted. The small p-value we got (< 2.2e-16) suggests that H1N1 vaccination status is related to seasonal flu vaccination status.
+
+```{r, echo=F}
+con=table(SeasonalVaccine=rbind(training_set,testing_set)$seasonal_vaccine, H1N1Vaccine=rbind(training_set,testing_set)$h1n1_vaccine)
+con %>%
+  kbl(caption = "Contingency Table of Seasonal vs. H1N1 Saccine") %>%
+  add_header_above(c(" ", "H1N1 Vaccine" = 2))%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r, fig.width=8, fig.height=3, echo=F}
+mosaicplot(con, main="Fig 1: Seasonal Vaccine and H1N1 Vaccine")
+```
+
+```{r, eval=F, include=F}
+chisq.test(con)
+```
+
+We also explored the relationship between H1N1 vaccination status and other predictor variables ("opinion_h1n1_risk","doctor_recc_h1n1", and "opinion_h1n1_vacc_effective"). From Figure 2, we observed that if physician recommend H1N1 vaccine to his/her patient, larger proportion of people got vaccinated against H1N1. From Figure 3, as people's perceived H1N1 risk increases, a larger proportion of people got vaccinated against H1N1. From Figure 4, we observed that as the perceived effectiveness of the H1N1 vaccine increases, a larger proportion of people got vaccinated against H1N1.
+
+```{r, fig.width=8, fig.height=3, echo=F}
+par(mfrow=c(2,2))
+par(mar=c(1,1,1,1))
+con.doc_recc=table(DoctorRecommend=rbind(training_set,testing_set)$doctor_recc_h1n1, H1N1Vaccine=rbind(training_set,testing_set)$h1n1_vaccine)
+mosaicplot(con.doc_recc, main="Fig 2: Doctor Recc and H1N1 Vacc")
+con.opinion.risk=table(OpinionRisk=rbind(training_set,testing_set)$opinion_h1n1_risk, H1N1Vaccine=rbind(training_set,testing_set)$h1n1_vaccine)
+mosaicplot(con.opinion.risk, main="Fig 3: Opinion H1N1 Risk and H1N1 Vacc")
+con.opinion.effect=table(OpinionEffective=rbind(training_set,testing_set)$opinion_h1n1_vacc_effective, H1N1Vaccine=rbind(training_set,testing_set)$h1n1_vaccine)
+mosaicplot(con.opinion.effect, main="Fig 4: Opinion Vacc Effective and H1N1 Vacc")
+```
+
+# Learning Methods
+**Unsupervised - PCA**
+The dimension of the data is the same as the number of variables in the data set. We want to reduce it because a large number of dimensions complicates our work and adds unnecessary workload. We can reduce the dimension by performing a PCA analysis. PCA is essentially projecting the observed data into a different axis (PCs) so that the dimension can be reduced. In other words, PCA analysis finds the most important determinants in the dataset that can explain most of the variations of the data and help us get rid of the dispensable variables. Since we have more than 30 predictor variables, performing PCA can help us reduce the dimension of the data while keeping most of the variability in the data.
+
+**Unsupervised - K-Means Clustering**
+K-means clustering means that we will group the observations into k groups (clusters) based on their characteristics and use these clusters to label unlabeled observations. A cluster is a group of observations that are similar to each other based on their observed characteristics. Clustering is helpful to this dataset because we can understand the structure of the data by comparing the clusters we constructed to the actual H1N1 vaccination label.
+
+**Supervised - LASSO**
+Lasso regression is a simple technique to reduce model complexity and prevent over-fitting which may result from simple linear regression. It is a penalized regression approach that uses regularization to force many components estimates to 0. Regularization is implemented by adding a “penalty” term to the best fit derived from the trained data, to achieve a lesser variance with the tested data and also restricts the influence of predictor variables over the output variable by compressing their coefficients. That is, Logistic LASSO Regression works well with a large number of predictor variables because it can help us eliminate the unnecessary ones.
+
+**Supervised - Decision Tree**
+Decision tree algorithms use the training data to segment the predictor space into non-overlapping regions, the nodes of the tree. Each node is described by a set of rules which are then used to predict new responses. For our classification project, the predicted value for each node is the most common response in the node. The algorithm splits by recursive partitioning, starting with all the observations in a single node. It splits this node at the best predictor variable and best cutpoint so that the responses within each sub-tree are as homogenous as possible, and repeats the splitting process for each of the child nodes. The split cutoff maximizes the “purity” in the sub-partition. Then, the original tree will be “pruneed” to avoid over-fitting our data. The most common pruning method is cost-complexity pruning. Cost-complexity pruning minimizes the cost complexity: CC(T)=R(T)+cp|T|, where |T| is the tree size (complexity), R(T) is the missclassification rate (decision trees), and cp is the complexity parameter. The complexity parameter yielding the lowest cost complexity is the optimal tree size.
+
+# Results and Discussion
+
+## PCA
+
+In this dataset, since there are more samples than the variables, we expect the matrix X'X to be invertible, and hence we think that PCA may not do a great job in reducing the dimensions. Indeed, the result from the PCAs show that all 33 eigenvalues are positive and the smallest one is 0.2257131.\
+
+```{r, eval=T, include=F}
+trainOrig <- read.csv('training_set.csv', header = TRUE) 
+testOrig <- read.csv('testing_set.csv', header = TRUE)
+origData <- rbind(trainOrig, testOrig)
+pca_orig <- prcomp(origData[, c(1:33)], center = TRUE, scale. = TRUE)
+h1n1_vaccine <- as.factor(origData[, 34])
+```
+
+```{r, eval=T, echo=F, fig.width=8, fig.height=3}
+var_perc <- c()
+cum_var_perc <- c()
+pca_orig.var <- pca_orig$sdev ^ 2
+pca_orig.var.sum <- sum(pca_orig.var)
+cum_var_sum <- 0
+for (i in 1:length(pca_orig$sdev)) {
+  var_perc[i] <- pca_orig.var[i] / pca_orig.var.sum
+  cum_var_sum <- cum_var_sum + pca_orig.var[i]
+  cum_var_perc[i] <- cum_var_sum / pca_orig.var.sum
+}
+
+par(mfrow=c(1,2))
+plot(var_perc[1:10], ylab = '% Variances of PCs', main="Fig 5: Percentage of Variance Explained")
+plot(cum_var_perc, ylab = 'Cumulative % Variances', main="Fig 6: Cumulative Variance Explained")
+```
+
+From the two plots above, the largest PC only explains about 12% of the variances, and it takes about 25 of the 33 PCs to explain 90% of the whole variances. The PCA here does not provide an effective solution to reduce the dimensions. However when we make the pairwise plots of the first 3 PCs colored with the real H1N1 vaccination statuses (above), we can see that there is somewhat a boundary separating the two clusters. 
+
+```{r, eval=T, echo=F, fig.width=8, fig.height=3}
+first_3pcs <- pca_orig$x[, c(1:3)]
+pairs(first_3pcs, col = h1n1_vaccine, oma = c(4, 4, 6, 12), main = "Fig 7: PCA vs H1N1 Vaccine Status")
+par(xpd = TRUE)
+legend("bottomright", 
+  legend = c("No H1N1", "Has H1N1"), col = as.factor(c(0, 1)), pch = 1, 
+  pt.cex = 0.75, cex = 0.75)
+
+fourGroup <- as.factor((sapply(1:nrow(origData), function(i) {
+  if (!origData[i, 33] && !origData[i, 34]) {
+    return (0)
+  }
+  if (origData[i, 33] && !origData[i, 34]) {
+    return (1)
+  }
+  if (!origData[i, 33] && origData[i, 34]) {
+    return (2)
+  }
+  else {
+    return (3)
+  }
+})))
+pairs(first_3pcs, col = fourGroup, oma = c(4, 4, 6, 15), main = "Fig 8: PCA vs. H1N1 and Seasonal Vaccine Status")
+par(xpd = TRUE)
+legend("bottomright", 
+  legend = c("No Seasonal,\nNo H1N1", "Has Seasonal,\nNo H1N1",
+             "No Seasonal,\nHas H1N1", "Has Seasonal,\nHas H1N1"), 
+  col = as.factor(c(0, 1, 2, 3)), pch = 1, pt.cex = 0.75, cex = 0.75, 
+  y.intersp = 1.5)
+
+```
+
+We also create a pairwise plot of the first 3 PCs colored with both seasonal vaccine statuses and H1N1 vaccine statuses (above). We find that most people without seasonal vaccines don't have H1N1 vaccines, and those who do have seasonal vaccines have H1N1 vaccines. This corresponds to our findings in exploratory data analysis. Looking at the plot on the first row and the second column, we can see that the boundary separating the two are those people who have only one of the vaccines.\
+
+## K-means
+
+```{r, echo = F, fig.width=8, fig.height=3}
+withinss = rep(0, 10)
+
+for(k in 1:10){
+	z = kmeans(origData[, c(1:33)], k,iter.max = 100)
+	withinss[k] = z$tot.withinss
+}
+
+plot(c(1:10), withinss, xlab = "Clusters", ylab = "Errors", 
+     main = "Fig 9: Errors vs. Number of Clusters")
+lines(x = c(1:10), y = withinss)
+```
+
+For K-means, we first calculate the clusters having k ranging from 1 to 10, and plot the errors within each cluster. From the plot, we can see that the error drops the most significantly when k equals 2, so for the following analysis, we set k to 2 in the k-means algorithm.
+
+```{r, echo=FALSE}
+
+kmeans2 = kmeans(origData[, c(1:33)], 2, iter.max = 100)
+labelKmeans = as.factor(kmeans2$cluster - 1)
+labelKmeans <- as.factor((sapply(labelKmeans, function(x) {
+  if(x == 0) {
+    return('A');
+  }
+  else {
+    return('B');
+  }
+})))
+table(h1n1_vaccine, labelKmeans)%>%
+  kbl(caption = "Contingency Table of the KMean Label vs. Actual Value") %>%
+  add_header_above(c(" ", "K.Mean Label" = 2))%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+We run k-means with 100 iterations, and here is the contingency table comparing k-means labels and h1n1 vaccine statuses. Notice that k-means is an unsupervised learning method, so it is **not** classifying each sample and predicting the h1n1 vaccine status. Instead, we are merely trying to see how well k-means can find the structure in the dataset, and compare the found structure to actual h1n1 vaccine statuses. From the contingency table, we can see that K-means generates two clusters (A and B), and most of the samples **without** h1n1 vaccines fall into one same cluster, and most of those **with** h1n1 vaccines fall into another same cluster. The overall "correct" rate is about 70%. K-means somewhat successfully uncovers the latent structure within the data, and that somewhat corresponds to the h1n1_vaccine statuses.\
+
+```{r, echo = FALSE, fig.width=8, fig.height=3}
+pairs(first_3pcs, col = c('orange', 'blue')[labelKmeans], oma = c(4, 4, 6, 15), main = "Fig 10: PCA vs K-means")
+par(xpd = TRUE)
+legend("bottomright", legend = c('A', 'B'),
+  col = c('orange', 'blue')[as.factor(c('A', 'B'))], pch = 1)
+```
+
+We also plot the first 3 PC components colored with the K-means labels. Compared with the pairwise plots of PCs with true H1N1 labels from the previous section, the structures are similar, but they are not quite the same. Looking at the plot on the first row and the second column, they both display a somewhat horizontal split.
+
+## LASSO Classification
+
+```{r, echo=F}
+train_data <- read.csv("training_set.csv")
+test_data <- read.csv("testing_set.csv")
+```
+
+```{r, echo=F, warning=F, include=F}
+x_train <- subset(train_data, select=-h1n1_vaccine)  %>% as.matrix
+y_train_h1n1 <- train_data$h1n1_vaccine
+x_test <- subset(test_data, select=-h1n1_vaccine)  %>% as.matrix
+y_test_h1n1 <- test_data$h1n1_vaccine
+```
+
+We chose penalized regression model as one of the supervised methods. The result of PCA shows eigenvalues of 33 predicting variables are all non-zero, we could use non-penalized or penalized regression models here; however, the number of observations is much greater than that of predictors in our data set, so we thought potential multi-collinearity among predictors might exist and using the penalized regression model is better than the non-penalized one. There are two kinds of penalized regression, Ridge regression and LASSO regression, and we would like to choose one of them to fit our data set. Both of the penalized regression methods keep all the predictor variables in the model but regularize the regression coefficients by shrinking them toward zero. If the amount of shrinkage is large enough, these methods can also perform variable selection by shrinking some coefficients to zero. Lambda is a constant to adjust the amount of the coefficient shrinkage, and larger lambda indicates more coefficients of predictors will be shrunk to zero.
+
+The first step we needed to do is finding the optimal lambda in the two regression models respectively. We used cross validation with the training set to choose the best lambda by creating a sequence of lambda from 0 to 1 by 0.01. The optimal results of lambda in the two regressions are both 0.01, so we reduced the range of lambda to find a more accurate value of lambda. By testing lambda from 0 to 0.05 by 0.0001, we found that the optimal value in the two regressions are both 0.0014 with the smallest mean square error (MSE). Then we built two penalized regression models with lambda=0.0014 based on our training set and did prediction on the response variable (H1N1_vaccine) with our testing set. By comparing with the real data in testing set, the test error in Ridge regression model is about 16.42% and the test error in LASSO is around 16.37%, so we would like to choose LASSO with lambda = 0.0014 as our penalized regression model. 
+
+```{r, eval=F, include=F}
+set.seed(1)
+lambdas <- seq(0, 0.05, by = .0001)
+
+ridge_cv_h1n1<-cv.glmnet(x_train, y_train_h1n1, alpha = 0, lambda = lambdas, family = "binomial",  standardize = TRUE, nfolds = 10)
+
+# Best lambda value
+best_lambda_ridge_h1n1 <- ridge_cv_h1n1$lambda.min 
+best_lambda_ridge_h1n1
+
+# Best ridge regression model
+best_ridge_h1n1 <- glmnet(x_train, y_train_h1n1, alpha = 0, lambda = best_lambda_ridge_h1n1, family="binomial", standardize = TRUE)
+coef(best_ridge_h1n1)
+
+#Prediction on testing data
+ridge_reg_prob_h1n1 <- predict(best_ridge_h1n1, s = best_lambda_ridge_h1n1, newx = x_test)
+ridge_reg_pred_h1n1 <- ifelse(ridge_reg_prob_h1n1 >= 0.5, 1, 0)
+
+#Error rate in Lasso regression for W/L
+ridge_reg_R_h1n1 <- 100 * sum(ridge_reg_pred_h1n1 != y_test_h1n1)/length(y_test_h1n1)
+ridge_reg_R_h1n1
+```
+
+```{r, echo=F, warning=F, fig.width=8, fig.height=3}
+set.seed(2)
+lambdas <- seq(0, 0.05, by = .0001)
+lasso_cv_h1n1<-cv.glmnet(x_train, y_train_h1n1, alpha = 1, lambda = lambdas, family = "binomial", standardize = TRUE, nfolds = 10)
+plot(lasso_cv_h1n1,method="density", main="Fig 11: MSE vs. Log(Lambda)")
+```
+
+```{r, echo=F, warning=F, fig.width=8, fig.height=3}
+set.seed(3)
+l <- seq(0, 0.05, by = .0001)
+
+r <- rep(0, length(l))
+
+j <- 0
+
+for (i in l){
+  j=j+1;
+  model <- glmnet(x_train, y_train_h1n1, alpha = 1, lambda = i, standardize = TRUE,family="binomial")
+  prob <- predict(model, s = i, newx = x_test)
+  pred <- ifelse(prob >= 0.5, 1, 0)
+  r[j] <- 100 * sum(pred != y_test_h1n1)/length(y_test_h1n1)
+}
+plot(x=l, y=r, type="l", color="blue", lwd=5, xlab="lambda", ylab="Test error (%)", main="Fig 12: Test Error vs. Lambda")
+
+# Best lambda value
+best_lambda_lasso_h1n1 <- lasso_cv_h1n1$lambda.min 
+
+# Best LASSO regression model
+best_lasso_h1n1 <- glmnet(x_train, y_train_h1n1, alpha = 1, lambda = best_lambda_lasso_h1n1, family="binomial", standardize = TRUE)
+
+#Prediction on testing data
+lasso_reg_prob_h1n1 <- predict(best_lasso_h1n1, s = best_lambda_lasso_h1n1, newx = x_test)
+lasso_reg_pred_h1n1 <- ifelse(lasso_reg_prob_h1n1 >= 0.5, 1, 0)
+
+#Error rate in Lasso regression
+lasso_reg_R_h1n1 <- 100 * sum(lasso_reg_pred_h1n1 != y_test_h1n1)/length(y_test_h1n1)
+#lasso_reg_R_h1n1
+
+table(y_test_h1n1, lasso_reg_pred_h1n1)%>%
+  kbl(caption = "Contingency Table of the LASSO Predicted vs. Actual Value") %>%
+  add_header_above(c(" ", "Prediction" = 2))%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+
+# Extracting Coefficient
+a <- as.data.frame(as.matrix(coef(best_lasso_h1n1)))%>%
+  rename("Coefficient"=s0)%>%
+  arrange(desc(abs(Coefficient)))
+head(a) %>%
+  kbl(caption = "5 Variables with the Greatest Absolute Coefficient Values") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+In our LASSO regression model, 6 predictors are shrunk to zero, which are "h1n1_concern", "behavioral_face_mask", "behavioral_wash_hands", "age_group", "income_poverty", and "rent_or_own". Also, by comparing the importance of all the predicting variables, we concluded that the top 5 important variables are "doctor_recc_h1n1", "seasonal_vaccine", "doctor_recc_seasonal", "health_insurance", and "health_worker" because the magnitude of their coefficients are larger than others.
+
+## Classification Tree
+
+```{r, fig.width=8, fig.height=3, echo=F}
+decision.tree = rpart(h1n1_vaccine~., data = training_set, method = 'class')
+rpart.plot(decision.tree, main="Fig 13: Classification Tree of H1N1 Vaccine Status")
+```
+
+\
+Note that, one of the many qualities of Decision Trees is that they require very little data preparation. In particular, they don’t require feature scaling or centering. By default, rpart() function uses the Gini impurity measure to split the node. Starting from the root: At the top, it is the overall probability of getting h1n1 vaccination. It shows the proportion of individuals that received h1n1 vaccination (30%). The first node asks whether the individual received regular flu vaccine. If yes, then go down to the root’s left child node. 50% of the total individuals didn't received seasonal flu vaccine and falls into this child node, but only 10% of the individual in the left child node received H1N1 vaccine. Therefore, we classify the H1N1 vaccination status of those individuals who did not receive seasonal flu vaccine as o (not received). Similar interpretation can be applied to other child node and decipher the plot. To sum up, the splitting features of this classification tree are "seasonal_vaccine" "doctor_recc_h1n1" "opinion_h1n1_risk" and "doctor_recc_seasonal"
+
+To test the effectiveness of the model, we applied the classification tree to the testing dataset and obtained the testing misclassification error is 1-0.8332=0.166, or 16.68%.
+
+```{r, echo=F}
+predict_decision.tree = predict(decision.tree, testing_set, type = 'class')
+```
+
+```{r, echo=F}
+table_mat = table(Reference=testing_set$h1n1_vaccine, Prediction=predict_decision.tree)
+table_mat %>%
+  kbl(caption = "Contingency Table of the Classification Tree Predicted vs. Actual Value") %>%
+  add_header_above(c(" ", "Prediction" = 2))%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r,echo=F, include=F}
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+print(paste('Accuracy for test', accuracy_Test))
+```
+
+## Classification Tree Bagging
+
+Bootstrap aggregation, or bagging, is a general-purpose procedure for reducing the variance of a statistical learning method. The algorithm constructs B classification trees using B bootstrapped training sets, and averages the resulting predictions. These trees are grown deep, and are not pruned. Hence each individual tree has high variance, but low bias. Averaging these B trees reduces the variance. For classification trees, bagging takes the “majority vote” for the prediction. Use a value of B sufficiently large that the error has settled down.
+
+To determine the optimal complexity parameter (cp), 10 combinations of the tuning parameters have been determined and 10-fold cross validation has been performed to determine the best tuning parameter that yield the lowest out-of-bag observations. To test the model accuracy, the out-of-bag observations are predicted from the data that weren't used to fit the model. In our dataset, the optimal cp value is 0.002. We then need to determine the number of trees B. 10 choices of B's are selected from 20 to 500 (with increment of 20 to save computation time). For each selection of B, we calculated both the out-of-bag observations and testing dataset error. As shown in Fig 14, the optimal number of classification tree B is 220 because it gives us a pretty good out-of-bag observations and testing dataset error. 
+
+```{r, echo=F, include=F}
+set.seed(426)
+oj.bag = train(h1n1_vaccine ~ ., 
+               data = training_set_mod, 
+               method = "rpart",  # for bagging
+               tuneLength = 10,  # choose up to 10 combinations of tuning parameters
+               metric = "ROC",  # evaluate hyperparamter combinations with ROC
+               trControl = trainControl(
+                 method = "cv",  # k-fold cross validation
+                 number = 10,  # k=10 folds
+                 savePredictions = "final",       # save predictions for the optimal tuning parameters
+                      classProbs = TRUE,  # return class probabilities in addition to predicted values
+                      summaryFunction = twoClassSummary  # for binary response variable
+                      )
+                    )
+oj.bag
+```
+
+```{r, echo=F}
+##Getting the number of tree B
+set.seed(426)
+OOB=rep(NA,25)
+Test.Error=rep(NA,25)
+for (i in 1:25){
+  rdf = randomForest(factor(h1n1_vaccine)~., data = training_set_mod, mtry = 33, ntree = i*20,cp=0.001992032,importance=TRUE)
+  OOB[i]=(rdf$confusion[1,1]+rdf$confusion[2,2])/(rdf$confusion[1,2]+rdf$confusion[2,1])
+  rdf.pred <- predict(rdf, testing_set_mod, type = "class")
+  rdf.conf <- table(Prediction=rdf.pred,Reference = testing_set_mod$h1n1_vaccine)
+  Test.Error[i]=sum(diag(rdf.conf)) / sum(rdf.conf)
+}
+```
+
+```{r, fig.width=6, fig.height=3, echo=F}
+#plot oob against test error
+OOB=1-OOB/(OOB+1)
+Test.Error=1-Test.Error
+Tree=c(1:25)*20
+plot(Tree, Test.Error,type="b", main="Fig 14: OOB and Test Error of Bagging Classification Tree")
+points(x = Tree,
+       y = OOB,
+       pch = 16,
+       col = "red",
+       type="b")
+legend(400, 0.175, legend=c("OOB", "Test Error"),
+       col=c("red", "black"), lty=1:2, cex=0.8)
+```
+
+```{r, echo=F}
+#Construct optimal bagging
+set.seed(426)
+bag = bagging(
+  formula = factor(h1n1_vaccine) ~ .,
+  data = training_set_mod,
+  nbagg = 220,   
+  coob = TRUE,
+  control = rpart.control(cp = 0.001992032)
+)
+```
+
+The performance of the bagging model has been tested on the testing dataset. As shown in Table 7, the testing misclassification error is 1-0.8434=0.1566, or 15.66%. Compared to the classification tree constructed earlier, the bagging method gives us a classification method that has a better performance. (15.66% vs. 16.68%)
+
+```{r, echo=F}
+set.seed(426)
+conf <- table(Reference = testing_set_mod$h1n1_vaccine,Prediction=predict(bag, testing_set_mod, type="class"))
+accuracy_Test <- sum(diag(conf)) / sum(conf)
+```
+
+```{r, echo=F}
+conf%>%
+  kbl(caption = "Contingency Table of the Bagging Tree Predicted vs. Actual Value") %>%
+  add_header_above(c(" ", "Prediction" = 2))%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+Since we are combining multiple classification trees together, it's important to take a look at the importance of each variables. As shown in Fig 15, the most important 5 variables are "opinion_h1n1_risk," "doctor_recc_h1n1," "opinion_h1n1_vacc_effective," "seasonal_vaacine," "opinion_seas_risk."
+
+
+```{r, echo=F}
+vip = varImp(bag)
+```
+
+```{r, fig.width=8, fig.height=3, echo=F}
+library(ggplot2)
+ggplot(data=vip)+
+  geom_bar(aes(x=row.names(vip),y=Overall), stat='identity')+
+  coord_flip()+
+  ylab("Variable Importance")+
+  xlab("Variable")+
+  ggtitle("Fig 15: Variable Importance of Classification Tree Bagging")
+```
+
+## Classification Tree Boosting
+
+Boosting is a method to improve (boost) the week learners sequentially and increase the model accuracy with a combined model. There are several boosting algorithms. One of the earliest was AdaBoost (adaptive boost). Adaboost creates a single split tree (decision stump) then weights the observations by how well the initial tree performed, putting more weight on the difficult observations. It then creates a second tree using the weights so that it focuses on the difficult observations. Observations that are difficult to classify receive increasing larger weights until the algorithm identifies a model that correctly classifies them. The final model returns predictions that are a majority vote. Gradient boosting generalizes the AdaBoost method, so that the object is to minimize a loss function. In the case of classification problems, the loss function is the log-loss. Gradient boosting constructs its trees in a “greedy” manner, meaning it chooses the best splits based on purity scores like Gini or minimizing the loss. Gradient boosting continues until it reaches maximum number of trees or an acceptable error level. 
+
+To determine the optimal boosting parameters, 5 combinations of the tuning parameters have been determined and 10-fold cross validation has been performed to determine the best tuning parameter that yield the lowest out-of-bag observations. In our dataset, as shown in Fig 16 that has the highest ROC value, the optimal parameters for boosting are number of boosting iterations (n.trees) = 150, maximum tree depth (interaction.depth) = 5, shrinkage = 0.1 and minimal terminal node size (n.minobsinnode) = 10.
+
+```{r, echo=F, include=F}
+set.seed(426)
+oj.gbm = train(h1n1_vaccine ~ ., 
+               data = training_set_mod, 
+               method = "gbm",  # for bagged tree
+               tuneLength = 5,  # choose up to 5 combinations of tuning parameters
+               metric = "ROC",  # evaluate hyperparamter combinations with ROC
+               trControl = trainControl(
+                 method = "cv",  # k-fold cross validation
+                 number = 10,  # 10 folds
+                 savePredictions = "final",       # save predictions for the optimal tuning parameter1
+                      classProbs = TRUE,  # return class probabilities in addition to predicted values
+                      summaryFunction = twoClassSummary  # for binary response variable
+                      )
+                    )
+#oj.gbm
+```
+
+```{r, fig.width=6, fig.height=3, echo=F}
+plot(oj.gbm, main="Fig 16: ROC of Different Boosting Parameters")
+```
+
+```{r, echo=F, include=F}
+#Construct the model
+set.seed(426)
+gbm.mod <- gbm(h1n1_vaccine ~ ., data = training_set,
+distribution = "bernoulli", n.trees = 150,
+interaction.depth = 5, shrinkage = 0.1, n.minobsinnode = 10)
+gbm.mod
+```
+
+The performance of the boosting model has been tested on the testing dataset. As shown in Table 8, the testing misclassification error is 1-0.8499=0.1501, or 15.01%. Compared to the classification tree and bagging classification tree constructed earlier, the bagging method gives us a classification method that has a better performance. (15.01% vs. 15.66% and 16.68%)
+
+```{r, echo=F}
+set.seed(426)
+gbm.mod.pred <- predict(gbm.mod, testing_set_mod, n.tree=100, type="response")
+gbm.mod.pred=ifelse(gbm.mod.pred>0.5,"Yes","No")
+gbm.mod.conf <- table(Reference = testing_set_mod$h1n1_vaccine, Prediction=gbm.mod.pred)
+gbm.mod.conf%>%
+  kbl(caption = "Contingency Table of the Boosting Tree Predicted vs. Actual Value") %>%
+  add_header_above(c(" ", "Prediction" = 2))%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+accuracy_Test <- sum(diag(gbm.mod.conf)) / sum(gbm.mod.conf)
+```
+
+Similar to bagging, we are combining multiple classification trees together, it's important to take a look at the importance of each variables. As shown in Fig 17, the most important 5 variables are "seasonal_vaccine" "opinion_h1n1_risk" "doctor_recc_h1n1" "opinion_h1n1_vacc_effective" and "doctor_recc_seasonal"
+
+```{r, echo=F,include=F}
+df=summary(gbm.mod)
+```
+
+```{r, fig.width=8, fig.height=3, echo=F}
+library(ggplot2)
+ggplot(data=df)+
+  geom_bar(aes(x=row.names(df),y=rel.inf), stat='identity')+
+  coord_flip()+
+  ylab("Variable Importance")+
+  xlab("Variable")+
+  ggtitle("Fig 17: Variable Importance of Classification Tree Boosting")
+```
+
+```{r, echo=F}
+Classfication.Method=c("Ridge Regression","LASSO","Classification Tree", "Classification Tree Bagging","Classification Tree Boosting")
+Test.Set.Error=c("16.42%","16.37%","16.68%","15.66%","15.01%")
+summary=as.data.frame(cbind(Classfication.Method, Test.Set.Error))
+summary%>%
+  rename("Classification Method"=Classfication.Method, "Test Set Error"=Test.Set.Error)%>%
+  kbl(caption = "Summary Table of the Test Set Error all the Supervised Machine Learning Method") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+
+Thus far, the boosting classification tree model is the best model we got in terms of minimizing testing dataset error. The most important 4 predictor variables are "seasonal_vaccine" "opinion_h1n1_risk" "doctor_recc_h1n1" and "opinion_h1n1_vacc_effective". To visualize how different values that predictor variables take can affect H1N1 vaccination status, 4 partial dependence plots have been created. The partial dependence plot shows the marginal effect one or two features have on the predicted outcome of a machine learning model. The plots show the relative logit contribution of the variable on the class probability from the perspective of the model. In other words negative values (in the y-axis) mean that the positive class is less likely for that value of the independent variable (x-axis) according to the model. Similarly positive values mean that the positive class is more likely for that value of the independent variable according to the model. Clearly, zero implies no average impact on class probability according to the model.
+
+All four partial dependence plot reflect what we observed in **Exploratory Data Analysis**. As shown by Fig 18-21, people who are vaccinated against seasonal flu are more positively associated with positive class (i.e. H1N1 vaccinated). People who are recommended to get H1N1 vaccine by doctors are also more positively associated with positive class (i.e. H1N1 vaccinated). Similarly, we observed that increase in people's perceived risk of H1N1 and H1N1 vaccine effectiveness are positively associated with positive class (i.e. H1N1 vaccinated)
+
+```{r, echo=F}
+p1=plot(gbm.mod , i = "seasonal_vaccine", ylab="",main="Fig 18: Partial Dependence Plot 1")
+p2=plot(gbm.mod , i = "doctor_recc_h1n1", ylab="",main="Fig 19 Partial Dependence Plot 2")
+p3=plot(gbm.mod , i = "opinion_h1n1_risk", ylab="",main="Fig 20: Partial Dependence Plot 3")
+p4=plot(gbm.mod , i = "opinion_h1n1_vacc_effective",ylab="",main="Fig 21: Partial Dependence Plot 4")
+grid.arrange(p1,p2,p3,p4,nrow = 2)
+```
+
+# Conclusion
+
+We have constructed several supervised machine learning models to predict the likelihood of an individual getting H1N1 vaccine using the dataset that contains individual, social, economic characteristics of an individual. The best model we got so far is the boosting classification tree model, with testing dataset error of 15.01%. All of our supervised models shows that individual characteristics matters more than the socio-economic characteristics when it comes to the decision of getting H1N1 vaccination. In fact, almost all of our prediction models returns "seasonal_vaccine" "opinion_h1n1_risk" "doctor_recc_h1n1" "opinion_h1n1_vacc_effective" and "doctor_recc_seasonal" as being the most important variables. However, it's important to note that one of the limitation of out study is that many of the variables in our dataset are self-reported values, which means that the reported value might not truly reflect the real-condition of the respondent.
+
+Our analysis can also provide insights to public health practioners. In addition to the traditional public health approach, in which national or regional efforts have been done to shape the public opinion on pathogen risk and vaccine effectiveness, public health experts should work closely with medical care providers in clinical setting. As recommendations from primary care physician can also affect people's decision of getting H1N1 vaccine. During the current COVID-19 pandemic, our study also has very important real-life implications. Our study result sheds light on public health strategies to encourage people to get vaccinated. Though National survey data on COVID-19 vaccination status is not yet available, public health practionioners can utilize the key strategies identified in our study (through analyzing a similar H1N1 global pandemic): traditional approach to shape public opinion and collaboration with medical care provider.
+
